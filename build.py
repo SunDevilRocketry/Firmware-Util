@@ -11,6 +11,7 @@ def build_executable():
         '--windowed',
         '--name=Firmware-Util',
         '--add-data=icon.png;.',
+        '--add-data=resources;resources',
         'firmware_flasher.py'
     ]
     

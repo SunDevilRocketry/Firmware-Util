@@ -8,10 +8,17 @@ import re
 import json
 import zipfile
 import urllib.request
+import time
+import ssl
+try:
+    import certifi
+except Exception:
+    certifi = None
 import winreg
 import shutil
 from pathlib import Path
 from threading import Thread
+import tempfile
 try:
     import py7zr
 except ImportError:
@@ -48,6 +55,21 @@ class FirmwareFlasher:
             self.show_setup_wizard()
         else:
             self.create_main_ui()
+    
+    def _resource_path(self, relative_path):
+        """Get absolute path to resource, works for PyInstaller and dev.
+        Looks for files inside bundled resources directory.
+        """
+        base_path = getattr(sys, '_MEIPASS', None)
+        if base_path:
+            candidate = Path(base_path) / 'resources' / relative_path
+            if candidate.exists():
+                return str(candidate)
+        # Dev mode fallback
+        candidate = Path('resources') / relative_path
+        if candidate.exists():
+            return str(candidate)
+        return None
     
     def load_config(self):
         if self.config_file.exists():
@@ -174,7 +196,13 @@ class FirmwareFlasher:
             install_dir.mkdir(exist_ok=True)
             self.log_setup(f"Downloading ST-Link toolkit to {install_dir}...")
             
-            urllib.request.urlretrieve(stlink_url, zip_path)
+            bundled_zip = self._resource_path('stlink-1.8.0-win32.zip')
+            if bundled_zip and os.path.exists(bundled_zip):
+                self.log_setup("Using bundled ST-Link archive")
+                shutil.copy2(bundled_zip, zip_path)
+            else:
+                self.log_setup("Bundled ST-Link not found, downloading...")
+                self._download_with_requests(stlink_url, zip_path)
             self.log_setup("Download complete. Extracting...")
             
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
@@ -186,36 +214,14 @@ class FirmwareFlasher:
             self.config["stlink_path"] = str(extracted_folder)
             self.log_setup(f"ST-Link extracted to: {extracted_folder}")
             
-            self.log_setup("Downloading libusb-1.0.dll...")
-            libusb_url = "https://github.com/libusb/libusb/releases/download/v1.0.27/libusb-1.0.27.7z"
-            libusb_7z_path = install_dir / "libusb.7z"
-            
-            urllib.request.urlretrieve(libusb_url, libusb_7z_path)
-            self.log_setup("libusb download complete. Extracting...")
-            
-            if py7zr:
-                libusb_extract_dir = install_dir / "libusb_temp"
-                libusb_extract_dir.mkdir(exist_ok=True)
-                
-                with py7zr.SevenZipFile(libusb_7z_path, mode='r') as archive:
-                    archive.extractall(path=libusb_extract_dir)
-                
-                dll_source = libusb_extract_dir / "libusb-1.0.27" / "MinGW32" / "dll" / "libusb-1.0.dll"
-                dll_dest = extracted_folder / "bin" / "libusb-1.0.dll"
-                
-                if dll_source.exists():
-                    shutil.copy2(dll_source, dll_dest)
-                    self.log_setup(f"✓ libusb-1.0.dll installed to: {dll_dest}")
-                else:
-                    self.log_setup("✗ Could not find libusb-1.0.dll in archive")
-                    self.log_setup(f"Please manually extract and copy to: {dll_dest}")
-                
-                shutil.rmtree(libusb_extract_dir, ignore_errors=True)
-                libusb_7z_path.unlink()
+            self.log_setup("Installing libusb-1.0.dll...")
+            dll_dest = extracted_folder / "bin" / "libusb-1.0.dll"
+            bundled_dll = self._resource_path('libusb-1.0.dll')
+            if bundled_dll and os.path.exists(bundled_dll):
+                shutil.copy2(bundled_dll, dll_dest)
+                self.log_setup(f"✓ libusb-1.0.dll installed to: {dll_dest}")
             else:
-                self.log_setup("✗ py7zr not available. Please manually install libusb-1.0.dll")
-                self.log_setup(f"1. Extract {libusb_7z_path}")
-                self.log_setup(f"2. Copy MinGW32/dll/libusb-1.0.dll to: {extracted_folder / 'bin'}")
+                self.log_setup("✗ Bundled libusb-1.0.dll not found. Please provide it in resources.")
             
             self.log_setup("Adding ST-Link to PATH...")
             self.add_to_path(str(extracted_folder / "bin"))
@@ -226,6 +232,44 @@ class FirmwareFlasher:
         except Exception as e:
             self.log_setup(f"Error during installation: {str(e)}")
             messagebox.showerror("Installation Error", str(e))
+
+    def _download_with_requests(self, url, dest_path, retries=3, timeout=60):
+        """Download a file using requests with certifi CA bundle and retries.
+        Falls back to urllib with unverified SSL context only if absolutely necessary.
+        """
+        last_err = None
+        headers = {"User-Agent": "Firmware-Util/1.0 (+requests)"}
+        for attempt in range(1, retries + 1):
+            try:
+                kwargs = {"headers": headers, "stream": True, "timeout": timeout}
+                if certifi is not None:
+                    kwargs["verify"] = certifi.where()
+                with requests.get(url, **kwargs) as r:
+                    r.raise_for_status()
+                    total = int(r.headers.get("Content-Length", 0))
+                    downloaded = 0
+                    with open(dest_path, "wb") as f:
+                        for chunk in r.iter_content(chunk_size=1024 * 128):
+                            if not chunk:
+                                continue
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            # Optionally log progress every ~5 MB
+                            if total and downloaded % (5 * 1024 * 1024) < 128 * 1024:
+                                self.log_setup(f"  Downloaded {downloaded // (1024*1024)} / {total // (1024*1024)} MB...")
+                return
+            except Exception as e:
+                last_err = e
+                self.log_setup(f"  Attempt {attempt} failed: {e}")
+                time.sleep(min(2 ** attempt, 10))
+        # Final fallback: urllib with unverified SSL if cert chain problems persist
+        try:
+            self.log_setup("Falling back to urllib download (SSL unverified)...")
+            context = ssl._create_unverified_context()
+            with urllib.request.urlopen(url, context=context, timeout=timeout) as resp, open(dest_path, "wb") as out:
+                shutil.copyfileobj(resp, out)
+        except Exception:
+            raise last_err
     
     def add_to_path(self, new_path):
         try:
@@ -244,13 +288,22 @@ class FirmwareFlasher:
             self.log_setup(f"Could not modify PATH: {str(e)}")
     
     def install_driver(self):
-        self.log_setup("Opening STSW-009 driver download page...")
-        driver_url = "https://www.st.com/en/development-tools/stsw-link009.html"
-        
-        import webbrowser
-        webbrowser.open(driver_url)
-        
-        self.log_setup(f"Please download and install the driver from: {driver_url}")
+        self.log_setup("Installing STSW-LINK009 (AMD64) driver...")
+        bundled_installer = self._resource_path('dpinst_amd64.exe')
+        if bundled_installer and os.path.exists(bundled_installer):
+            try:
+                # Launch installer (user will likely need to approve UAC). Do not wait forever.
+                subprocess.Popen([bundled_installer], shell=False)
+                self.log_setup("Driver installer launched. Follow on-screen prompts.")
+            except Exception as e:
+                self.log_setup(f"✗ Failed to launch driver installer: {e}")
+                messagebox.showerror("Driver Install Error", str(e))
+        else:
+            self.log_setup("Bundled driver installer not found. Opening download page...")
+            driver_url = "https://www.st.com/en/development-tools/stsw-link009.html"
+            import webbrowser
+            webbrowser.open(driver_url)
+            self.log_setup(f"Please download and install the driver from: {driver_url}")
         self.log_setup("After installation, click 'Complete Setup'")
     
     def complete_setup(self):
