@@ -12,3 +12,5 @@ This tool redistributes software in compliance with STMicroelectronics' Ultimate
 STLink-1.8.0-win32.zip is governed by the BSD 3-Clause License.
 
 Libusb-1.0.dll is governed by the LGPL-2.1 license.
+
+No licence adopted by the project may overwrite the terms of the licenses above.
