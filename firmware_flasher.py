@@ -156,8 +156,12 @@ class FirmwareFlasher:
                  font=(self.font_family, 16, "bold"), bg=self.white, fg=self.black).pack(pady=20)
         
         tk.Label(self.setup_window, text="This tool requires ST-Link utilities to flash firmware.\n"
-                 "The setup wizard will guide you through the installation process.",
-                 justify=tk.LEFT, bg=self.white, fg=self.black, font=(self.font_family, 10)).pack(pady=10, padx=20)
+                 "The setup wizard will guide you through the installation process.\n"
+                 "Any and all software installed by this tool is owned by ST-Microelectronics and subject to their terms of use.\n"
+                 "This tool does NOT subject the packaged software to any open source license Sun Devil Rocketry may use.\n"
+                 "By installing this software, you acknowledge and agree to their software license agreement.\n"
+                 "https://www.st.com/resource/en/license_agreement/dm00216740.pdf",
+                 justify=tk.CENTER, bg=self.white, fg=self.black, font=(self.font_family, 10)).pack(pady=10, padx=20)
         
         self.setup_log = scrolledtext.ScrolledText(self.setup_window, height=15, width=80, 
                                                    bg=self.light_gray, font=(self.font_family, 9))
