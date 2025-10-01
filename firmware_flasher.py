@@ -19,6 +19,7 @@ import shutil
 from pathlib import Path
 from threading import Thread
 import tempfile
+import ctypes
 try:
     import py7zr
 except ImportError:
@@ -70,6 +71,31 @@ class FirmwareFlasher:
         if candidate.exists():
             return str(candidate)
         return None
+
+    def _is_admin(self):
+        try:
+            return ctypes.windll.shell32.IsUserAnAdmin() != 0
+        except Exception:
+            return False
+
+    def _run_elevated(self, executable, params=None):
+        try:
+            verb = "runas"
+            lpFile = executable
+            lpParameters = params or ""
+            show_cmd = 1
+            ret = ctypes.windll.shell32.ShellExecuteW(None, verb, lpFile, lpParameters, None, show_cmd)
+            if ret <= 32:
+                raise RuntimeError(f"Elevation failed, code {ret}")
+            return True
+        except Exception as e:
+            self.log_setup(f"✗ Failed to run elevated: {e}")
+            return False
+
+    def _run_elevated_robocopy(self, src_dir, dest_dir):
+        # Use cmd.exe to run robocopy with elevation; robocopy returns > 0 for success codes as well
+        cmd = f"/c robocopy \"{src_dir}\" \"{dest_dir}\" /E"
+        return self._run_elevated("cmd.exe", cmd)
     
     def load_config(self):
         if self.config_file.exists():
@@ -223,6 +249,25 @@ class FirmwareFlasher:
             else:
                 self.log_setup("✗ Bundled libusb-1.0.dll not found. Please provide it in resources.")
             
+            # Move any 'Program Files (x86)' content to actual Program Files (x86)
+            pf_x86 = os.environ.get('ProgramFiles(x86)')
+            if pf_x86:
+                candidate = extracted_folder / 'Program Files (x86)'
+                if candidate.exists() and candidate.is_dir():
+                    dest_root = Path(pf_x86)
+                    self.log_setup(f"Detected Program Files (x86) payload; moving to {dest_root} (admin required)...")
+                    if self._is_admin():
+                        # Copy contents into destination
+                        subprocess.run(['robocopy', str(candidate), str(dest_root), '/E'], check=False)
+                        self.log_setup("✓ Copied to Program Files (x86)")
+                    else:
+                        ok = self._run_elevated_robocopy(str(candidate), str(dest_root))
+                        if ok:
+                            self.log_setup("✓ Copied to Program Files (x86) via elevation")
+                        else:
+                            self.log_setup("✗ Failed to copy to Program Files (x86). You may need to rerun as Administrator.")
+                    # Do not delete candidate; it's in extracted folder under user space
+			
             self.log_setup("Adding ST-Link to PATH...")
             self.add_to_path(str(extracted_folder / "bin"))
             
@@ -291,13 +336,20 @@ class FirmwareFlasher:
         self.log_setup("Installing STSW-LINK009 (AMD64) driver...")
         bundled_installer = self._resource_path('dpinst_amd64.exe')
         if bundled_installer and os.path.exists(bundled_installer):
-            try:
-                # Launch installer (user will likely need to approve UAC). Do not wait forever.
-                subprocess.Popen([bundled_installer], shell=False)
-                self.log_setup("Driver installer launched. Follow on-screen prompts.")
-            except Exception as e:
-                self.log_setup(f"✗ Failed to launch driver installer: {e}")
-                messagebox.showerror("Driver Install Error", str(e))
+            if self._is_admin():
+                try:
+                    subprocess.Popen([bundled_installer], shell=False)
+                    self.log_setup("Driver installer launched as administrator. Follow on-screen prompts.")
+                except Exception as e:
+                    self.log_setup(f"✗ Failed to launch driver installer: {e}")
+                    messagebox.showerror("Driver Install Error", str(e))
+            else:
+                self.log_setup("Elevation required. Prompting for administrator privileges...")
+                ok = self._run_elevated(bundled_installer)
+                if ok:
+                    self.log_setup("Driver installer launched with elevation. Follow on-screen prompts.")
+                else:
+                    self.log_setup("✗ Could not obtain elevation to run driver installer.")
         else:
             self.log_setup("Bundled driver installer not found. Opening download page...")
             driver_url = "https://www.st.com/en/development-tools/stsw-link009.html"
