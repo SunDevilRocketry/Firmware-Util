@@ -9,6 +9,7 @@ def build_executable():
         'pyinstaller',
         '--onefile',
         '--windowed',
+        '--noupx',
         '--name=Firmware-Util',
         '--add-data=icon.png;.',
         '--add-data=resources;resources',
@@ -20,6 +21,10 @@ def build_executable():
     else:
         print("⚠ Icon not found, building without icon")
     
+    # Include version info if present
+    if os.path.exists('version_info.txt'):
+        pyinstaller_args.insert(-1, '--version-file=version_info.txt')
+
     try:
         subprocess.run(pyinstaller_args, check=True)
         print("\n✓ Build complete!")
