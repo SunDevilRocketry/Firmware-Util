@@ -43,10 +43,11 @@ class FirmwareFlasher:
         self.light_gray = "#F5F5F5"
         self.font_family = "Helvetica"
         
-        self.root.configure(bg=self.white)
-        
         self.config_file = Path.home() / ".sdr_flasher_config.json"
         self.config = self.load_config()
+        
+        self.theme = self.config.get("theme", "light")
+        self.set_theme(self.theme, initial=True)
         
         self.releases = []
         self.selected_release = None
@@ -56,6 +57,73 @@ class FirmwareFlasher:
             self.show_setup_wizard()
         else:
             self.create_main_ui()
+
+    def set_theme(self, mode, initial=False):
+        if mode == "dark":
+            # Dark palette
+            self.white = "#121212"
+            self.black = "#EAEAEA"
+            self.light_gray = "#1E1E1E"
+            self.maroon = "#BB86FC"  # accent in dark
+        else:
+            # Light palette (default)
+            self.white = "#FFFFFF"
+            self.black = "#000000"
+            self.light_gray = "#F5F5F5"
+            self.maroon = "#8B0000"
+        self.theme = mode
+        if not initial:
+            self.config["theme"] = self.theme
+            self.save_config()
+        try:
+            self.root.configure(bg=self.white)
+        except Exception:
+            pass
+        # TTK styles
+        try:
+            style = ttk.Style()
+            # Use a theme that allows color overrides for widgets (clam works well)
+            try:
+                if mode == "dark":
+                    style.theme_use('clam')
+                else:
+                    # revert to default if available; ignore errors
+                    style.theme_use(style.theme_use())
+            except Exception:
+                pass
+            # Entry area colors for Combobox
+            style.configure('TCombobox', fieldbackground=self.light_gray, foreground=self.black, background=self.white)
+            style.map('TCombobox', fieldbackground=[('readonly', self.light_gray)], foreground=[('readonly', self.black)])
+            # Buttons
+            style.configure('TButton', foreground=self.black)
+            # Dropdown list (Listbox inside Combobox popdown) via option database
+            try:
+                self.root.option_add('*TCombobox*Listbox.background', self.white if mode != 'dark' else self.light_gray)
+                self.root.option_add('*TCombobox*Listbox.foreground', self.black)
+                self.root.option_add('*TCombobox*Listbox.selectBackground', self.maroon)
+                self.root.option_add('*TCombobox*Listbox.selectForeground', self.white if mode != 'dark' else '#FFFFFF')
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _apply_theme_to_widgets(self, widget):
+        try:
+            widget_type = widget.winfo_class()
+            if widget_type in ("Frame", "TFrame"):
+                widget.configure(bg=self.white)
+            elif widget_type in ("Label",):
+                widget.configure(bg=self.white, fg=self.black)
+            elif widget_type in ("Button",):
+                widget.configure(bg=self.white, fg=self.black)
+            elif widget_type in ("Text",):
+                widget.configure(bg=self.light_gray, fg=self.black, insertbackground=self.black)
+            elif widget_type in ("Menu",):
+                widget.configure(bg=self.white, fg=self.black)
+        except Exception:
+            pass
+        for child in widget.winfo_children():
+            self._apply_theme_to_widgets(child)
     
     def _resource_path(self, relative_path):
         """Get absolute path to resource, works for PyInstaller and dev.
@@ -78,13 +146,15 @@ class FirmwareFlasher:
         except Exception:
             return False
 
-    def _run_elevated(self, executable, params=None):
+    def _run_elevated(self, executable, params=None, working_dir=None):
         try:
             verb = "runas"
             lpFile = executable
             lpParameters = params or ""
             show_cmd = 1
-            ret = ctypes.windll.shell32.ShellExecuteW(None, verb, lpFile, lpParameters, None, show_cmd)
+            # lpDirectory is the 5th parameter
+            lpDirectory = working_dir if working_dir else None
+            ret = ctypes.windll.shell32.ShellExecuteW(None, verb, lpFile, lpParameters, lpDirectory, show_cmd)
             if ret <= 32:
                 raise RuntimeError(f"Elevation failed, code {ret}")
             return True
@@ -164,19 +234,20 @@ class FirmwareFlasher:
                  justify=tk.CENTER, bg=self.white, fg=self.black, font=(self.font_family, 10)).pack(pady=10, padx=20)
         
         self.setup_log = scrolledtext.ScrolledText(self.setup_window, height=15, width=80, 
-                                                   bg=self.light_gray, font=(self.font_family, 9))
+                                                   bg=self.light_gray, fg=self.black, font=(self.font_family, 9))
         self.setup_log.pack(pady=10, padx=20, fill=tk.BOTH, expand=True)
         
         self.check_current_setup_status()
+        self._apply_theme_to_widgets(self.setup_window)
         
         button_frame = tk.Frame(self.setup_window, bg=self.white)
         button_frame.pack(pady=10)
         
         tk.Button(button_frame, text="Install ST-Link Toolkit", 
-                  command=self.install_stlink, width=25, bg=self.white, 
+                  command=self.install_stlink, width=25, bg=self.white, fg=self.black,
                   font=(self.font_family, 9)).pack(side=tk.LEFT, padx=5)
         tk.Button(button_frame, text="Install STSW-009 Driver", 
-                  command=self.install_driver, width=25, bg=self.white, 
+                  command=self.install_driver, width=25, bg=self.white, fg=self.black,
                   font=(self.font_family, 9)).pack(side=tk.LEFT, padx=5)
         tk.Button(button_frame, text="Complete Setup", 
                   command=self.complete_setup, width=25, bg="#FFD700", fg="#000000", 
@@ -338,24 +409,57 @@ class FirmwareFlasher:
     
     def install_driver(self):
         self.log_setup("Installing STSW-LINK009 (AMD64) driver...")
-        bundled_installer = self._resource_path('dpinst_amd64.exe')
-        if bundled_installer and os.path.exists(bundled_installer):
+        # Prefer full driver ZIP if provided
+        bundled_zip = self._resource_path('stsw-link009.zip')
+        installer_path = None
+        working_dir = None
+        if bundled_zip and os.path.exists(bundled_zip):
+            try:
+                temp_dir = Path(tempfile.mkdtemp(prefix="stsw009_"))
+                self.log_setup(f"Extracting driver package to {temp_dir}...")
+                with zipfile.ZipFile(bundled_zip, 'r') as z:
+                    z.extractall(temp_dir)
+                # Locate dpinst_amd64.exe within the extracted tree
+                for root, dirs, files in os.walk(temp_dir):
+                    if 'dpinst_amd64.exe' in files:
+                        installer_path = os.path.join(root, 'dpinst_amd64.exe')
+                        working_dir = root
+                        break
+                if not installer_path:
+                    # Fallback: some packages use dpinst.exe in an amd64 folder
+                    for root, dirs, files in os.walk(temp_dir):
+                        if 'dpinst.exe' in files and ('amd64' in root.lower() or 'x64' in root.lower()):
+                            installer_path = os.path.join(root, 'dpinst.exe')
+                            working_dir = root
+                            break
+                if not installer_path:
+                    self.log_setup("✗ Could not find dpinst_amd64.exe in the ZIP package.")
+            except Exception as e:
+                self.log_setup(f"✗ Failed to extract driver package: {e}")
+        else:
+            # Fallback to single-file installer if provided directly
+            bundled_installer = self._resource_path('dpinst_amd64.exe')
+            if bundled_installer and os.path.exists(bundled_installer):
+                installer_path = bundled_installer
+                working_dir = os.path.dirname(bundled_installer)
+
+        if installer_path and os.path.exists(installer_path):
             if self._is_admin():
                 try:
-                    subprocess.Popen([bundled_installer], shell=False)
+                    subprocess.Popen([installer_path], shell=False, cwd=working_dir)
                     self.log_setup("Driver installer launched as administrator. Follow on-screen prompts.")
                 except Exception as e:
                     self.log_setup(f"✗ Failed to launch driver installer: {e}")
                     messagebox.showerror("Driver Install Error", str(e))
             else:
                 self.log_setup("Elevation required. Prompting for administrator privileges...")
-                ok = self._run_elevated(bundled_installer)
+                ok = self._run_elevated(installer_path, working_dir=working_dir)
                 if ok:
                     self.log_setup("Driver installer launched with elevation. Follow on-screen prompts.")
                 else:
                     self.log_setup("✗ Could not obtain elevation to run driver installer.")
         else:
-            self.log_setup("Bundled driver installer not found. Opening download page...")
+            self.log_setup("Bundled driver not found. Opening download page...")
             driver_url = "https://www.st.com/en/development-tools/stsw-link009.html"
             import webbrowser
             webbrowser.open(driver_url)
@@ -384,6 +488,7 @@ class FirmwareFlasher:
         
         settings_menu = tk.Menu(menubar, tearoff=0, font=(self.font_family, 10))
         menubar.add_cascade(label="Settings", menu=settings_menu)
+        settings_menu.add_command(label="Toggle Dark Mode", command=self.toggle_dark_mode)
         settings_menu.add_command(label="Run Setup Wizard", command=self.show_setup_wizard)
         settings_menu.add_separator()
         settings_menu.add_command(label="Exit", command=self.root.quit)
@@ -431,15 +536,31 @@ class FirmwareFlasher:
                   fg="#000000", font=(self.font_family, 10, "bold")).pack(side=tk.LEFT, padx=5)
         
         self.status_text = scrolledtext.ScrolledText(main_frame, height=10, width=90, 
-                                                     bg=self.light_gray, font=(self.font_family, 9))
+                                                     bg=self.light_gray, fg=self.black, font=(self.font_family, 9))
         self.status_text.pack(pady=10, fill=tk.BOTH, expand=True)
         
+        # Apply theme to all widgets in main frame
+        self._apply_theme_to_widgets(self.root)
         self.fetch_releases()
     
     def log_status(self, message):
         self.status_text.insert(tk.END, message + "\n")
         self.status_text.see(tk.END)
         self.root.update()
+
+    def toggle_dark_mode(self):
+        new_mode = "dark" if self.theme != "dark" else "light"
+        self.set_theme(new_mode)
+        # Rebuild current UI to apply colors
+        # If setup wizard is open, close and reopen it
+        try:
+            if hasattr(self, 'setup_window') and self.setup_window.winfo_exists():
+                self.setup_window.destroy()
+                self.show_setup_wizard()
+            else:
+                self.create_main_ui()
+        except Exception:
+            self.create_main_ui()
     
     def fetch_releases(self):
         self.log_status("Fetching releases from GitHub...")
