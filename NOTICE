@@ -1,0 +1,7 @@
+This tool redistributes software in compliance with STMicroelectronics' Ultimate Licence Agreement (https://www.st.com/resource/en/license_agreement/dm00216740.pdf). The packaged software included in this tool (dpinst_amd64.exe) is owned in its entirety by ST Microelectronics.
+
+STLink-1.8.0-win32.zip is governed by the BSD 3-Clause License.
+
+Libusb-1.0.dll is governed by the LGPL-2.1 license.
+
+No licence adopted by the project may overwrite the terms of the licenses above.
