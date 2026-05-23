@@ -17,9 +17,9 @@ def build_executable():
     ]
     
     if os.path.exists('icon.png'):
-        print("✓ Icon found, including in build")
+        print("[+] Icon found, including in build")
     else:
-        print("⚠ Icon not found, building without icon")
+        print("[!] Icon not found, building without icon")
     
     # Include version info if present
     if os.path.exists('version_info.txt'):
@@ -27,16 +27,16 @@ def build_executable():
 
     try:
         subprocess.run(pyinstaller_args, check=True)
-        print("\n✓ Build complete!")
+        print("\n[+] Build complete!")
         print("Executable location: dist/Firmware-Util.exe")
         print("\nYou can now distribute the .exe file to Windows users.")
         print("No Python installation required on target machines.")
     except subprocess.CalledProcessError as e:
-        print(f"✗ Build failed: {e}")
+        print(f"[X] Build failed: {e}")
         sys.exit(1)
     except FileNotFoundError:
-        print("✗ PyInstaller not found. Please install it first:")
-        print("  pip install pyinstaller")
+        print("[X] PyInstaller not found. Please install it first:")
+        print("    pip install pyinstaller")
         sys.exit(1)
 
 if __name__ == "__main__":
