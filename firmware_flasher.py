@@ -174,8 +174,9 @@ class FirmwareFlasher:
         try:
             if os.path.exists('icon.png'):
                 self.root.iconphoto(True, tk.PhotoImage(file='icon.png'))
-        except Exception:
-            pass
+        except Exception as e:
+            # Icon loading is optional; continue startup if it fails.
+            print(f"Warning: failed to set application icon: {e}", file=sys.stderr)
         
         self.maroon = "#8B0000"
         self.white = "#FFFFFF"
