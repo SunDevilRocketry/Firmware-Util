@@ -91,7 +91,7 @@ def order_same_line_prereleases(prereleases, exclude=None):
     for release in prereleases:
         if release is exclude:
             continue
-        kind, number = parse_prerelease_suffix(release['tag_name'])
+        kind, number = parse_prerelease_suffix(release['tag_name']) or (None, None)
         if kind is None:
             continue
         if kind == 'rc':
