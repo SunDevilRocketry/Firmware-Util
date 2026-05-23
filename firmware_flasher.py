@@ -174,7 +174,7 @@ class FirmwareFlasher:
         try:
             if os.path.exists('icon.png'):
                 self.root.iconphoto(True, tk.PhotoImage(file='icon.png'))
-        except:
+        except Exception:
             pass
         
         self.maroon = "#8B0000"
@@ -862,7 +862,7 @@ class FirmwareFlasher:
 
 def main():
     root = tk.Tk()
-    app = FirmwareFlasher(root)
+    FirmwareFlasher(root)
     root.mainloop()
 
 if __name__ == "__main__":
