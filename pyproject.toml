@@ -1,6 +1,6 @@
 [project]
 name = "Firmware-Util"
-version = "1.0.0"
+version = "2.0.0"
 description = "SDR's Firmware Flashing & Setup Utility"
 requires-python = ">=3.11"
 dependencies = [
