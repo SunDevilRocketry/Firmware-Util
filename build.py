@@ -40,7 +40,7 @@ def build_executable():
         sys.exit(1)
 
 if __name__ == "__main__":
-    if sys.platform != "win32":
+    if sys.platform != "win32" and not os.environ.get("CI"):
         print("Warning: This should ideally be built on Windows for best compatibility.")
         print("Building on non-Windows platform may have issues.")
         input("Press Enter to continue anyway, or Ctrl+C to cancel...")
