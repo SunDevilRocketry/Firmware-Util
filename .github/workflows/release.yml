@@ -43,6 +43,8 @@ jobs:
           - id: win64
             runner: windows-latest
     runs-on: ${{ matrix.runner }}
+    env:
+      PYTHONIOENCODING: utf-8
     steps:
       - uses: actions/checkout@v4
 
