@@ -1,6 +1,6 @@
 ## Firmware-Util
 
-Tool Maintainer: @etsells
+Tool Maintainer: [@etsells](https://github.com/ETSells)
 
 This project has been heavily vibe-coded using repl.it and Cursor. Responsible AI usage is encouraged on this repository as a learning platform for new tools.
 
