@@ -25,6 +25,79 @@ try:
 except ImportError:
     py7zr = None
 
+SEMVER_TAG_PATTERN = re.compile(r'^v?\d+\.\d+\.\d+(?:-\d+)?$')
+
+
+def is_prerelease_release(release):
+    tag = release.get('tag_name', '')
+    return release.get('prerelease') or '-' in tag
+
+
+def parse_version_base(tag):
+    base = tag.lstrip('v').split('-', 1)[0]
+    return tuple(map(int, base.split('.')))
+
+
+def parse_prerelease_number(tag):
+    parts = tag.lstrip('v').split('-', 1)
+    if len(parts) > 1 and parts[1].isdigit():
+        return int(parts[1])
+    return None
+
+
+def release_sort_key(release):
+    return parse_version_base(release['tag_name'])
+
+
+def prerelease_sort_key(release):
+    tag = release['tag_name']
+    return (*parse_version_base(tag), parse_prerelease_number(tag) or 0)
+
+
+def order_releases_for_display(releases, prereleases):
+    """Order: latest release, latest prerelease, same-line prereleases, other releases, other prereleases."""
+    releases = sorted(releases, key=release_sort_key, reverse=True)
+    prereleases = sorted(prereleases, key=prerelease_sort_key, reverse=True)
+
+    ordered = []
+    latest_release = releases[0] if releases else None
+    latest_prerelease = prereleases[0] if prereleases else None
+
+    if latest_release:
+        ordered.append(latest_release)
+    if latest_prerelease:
+        ordered.append(latest_prerelease)
+
+    if latest_prerelease:
+        latest_base = '.'.join(map(str, parse_version_base(latest_prerelease['tag_name'])))
+        same_line = []
+        other_prereleases = []
+        for release in prereleases[1:]:
+            base = '.'.join(map(str, parse_version_base(release['tag_name'])))
+            if base == latest_base:
+                same_line.append(release)
+            else:
+                other_prereleases.append(release)
+        ordered.extend(same_line)
+        ordered.extend(releases[1:])
+        ordered.extend(other_prereleases)
+    else:
+        ordered.extend(releases[1:])
+
+    return ordered, latest_release, latest_prerelease
+
+
+def format_release_display_name(release, latest_release, latest_prerelease):
+    label = f"{release['tag_name']} - {release['name']}"
+    if release is latest_release:
+        label += " (Latest release)"
+    elif release is latest_prerelease:
+        label += " (Latest prerelease)"
+    elif is_prerelease_release(release):
+        label += " (Pre-release)"
+    return label
+
+
 class FirmwareFlasher:
     def __init__(self, root):
         self.root = root
@@ -572,14 +645,12 @@ class FirmwareFlasher:
             
             all_releases = response.json()
             self.releases = []
-            # Updated regex to match vX.X.X and vX.X.X-XXX
-            semver_pattern = re.compile(r'^v?\d+\.\d+\.\d+(?:-\d+)?$')
             releases = []
             prereleases = []
             for release in all_releases:
                 tag = release.get('tag_name', '')
                 
-                if not semver_pattern.match(tag):
+                if not SEMVER_TAG_PATTERN.match(tag):
                     self.log_status(f"Skipping {tag} (not semantic versioning)")
                     continue
                 
@@ -591,30 +662,18 @@ class FirmwareFlasher:
                     continue
                 
                 release['bin_assets'] = bin_assets
-                if release.get('prerelease') or '-' in tag:
+                if is_prerelease_release(release):
                     prereleases.append(release)
                 else:
                     releases.append(release)
             
-            # Sort releases and prereleases by version (descending)
-            def version_key(r):
-                # Remove 'v' and split by '-' for prerelease
-                base = r['tag_name'].lstrip('v')
-                parts = base.split('-')
-                nums = tuple(map(int, parts[0].split('.')))
-                pre = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
-                return (*nums, -pre)  # prerelease comes after release
-            
-            releases.sort(key=version_key, reverse=True)
-            prereleases.sort(key=version_key, reverse=True)
-            
-            # Insert latest prerelease right after latest release
-            combined = releases[:1] + prereleases[:1] + releases[1:] + prereleases[1:]
-            self.releases = combined
-            
-            release_names = [f"{r['tag_name']} - {r['name']}" + 
-                           (" (Pre-release)" if r.get('prerelease') or '-' in r['tag_name'] else "") 
-                           for r in self.releases]
+            self.releases, latest_release, latest_prerelease = order_releases_for_display(
+                releases, prereleases
+            )
+            release_names = [
+                format_release_display_name(r, latest_release, latest_prerelease)
+                for r in self.releases
+            ]
             
             self.release_combo['values'] = release_names
             
