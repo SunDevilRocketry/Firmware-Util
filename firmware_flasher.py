@@ -25,6 +25,146 @@ try:
 except ImportError:
     py7zr = None
 
+RELEASE_TAG_PATTERN = re.compile(r'^v?\d+\.\d+\.\d+$', re.IGNORECASE)
+PRERELEASE_TAG_PATTERN = re.compile(
+    r'^v?\d+\.\d+\.\d+-(?:RC\d+|\d+)$',
+    re.IGNORECASE,
+)
+
+
+def classify_release_tag(tag):
+    """Return 'release', 'prerelease', or None for unrecognized tags."""
+    if RELEASE_TAG_PATTERN.match(tag):
+        return 'release'
+    if PRERELEASE_TAG_PATTERN.match(tag):
+        return 'prerelease'
+    return None
+
+
+def is_prerelease_release(release):
+    return classify_release_tag(release.get('tag_name', '')) == 'prerelease'
+
+
+def parse_version_base(tag):
+    base = tag.lstrip('v').split('-', 1)[0]
+    return tuple(map(int, base.split('.')))
+
+
+def format_version_base(tag):
+    return '.'.join(map(str, parse_version_base(tag)))
+
+
+def parse_prerelease_suffix(tag):
+    """Return ('rc', n) or ('build', n) for prerelease suffixes, else None."""
+    parts = tag.lstrip('v').split('-', 1)
+    if len(parts) < 2:
+        return None
+    suffix = parts[1]
+    if suffix.upper().startswith('RC') and suffix[2:].isdigit():
+        return ('rc', int(suffix[2:]))
+    if suffix.isdigit():
+        return ('build', int(suffix))
+    return None
+
+
+def release_sort_key(release):
+    return parse_version_base(release['tag_name'])
+
+
+def prerelease_recency_key(release):
+    """Newest prerelease first: higher base version, then more recently published."""
+    return (parse_version_base(release['tag_name']), release.get('published_at', ''))
+
+
+def filter_prereleases_superseded_by_release(releases, prereleases):
+    released_bases = {format_version_base(r['tag_name']) for r in releases}
+    return [
+        p for p in prereleases
+        if format_version_base(p['tag_name']) not in released_bases
+    ]
+
+
+def order_same_line_prereleases(prereleases, exclude=None):
+    """RCs descending, then continuous builds descending."""
+    rcs = []
+    builds = []
+    for release in prereleases:
+        if release is exclude:
+            continue
+        kind, number = parse_prerelease_suffix(release['tag_name']) or (None, None)
+        if kind is None:
+            continue
+        if kind == 'rc':
+            rcs.append((number, release))
+        elif kind == 'build':
+            builds.append((number, release))
+    rcs.sort(key=lambda item: item[0], reverse=True)
+    builds.sort(key=lambda item: item[0], reverse=True)
+    return [release for _, release in rcs] + [release for _, release in builds]
+
+
+def group_prereleases_by_base(prereleases):
+    groups = {}
+    for release in prereleases:
+        base = format_version_base(release['tag_name'])
+        groups.setdefault(base, []).append(release)
+    return groups
+
+
+def order_releases_for_display(releases, prereleases):
+    """Order: latest release, latest prerelease, same-line RCs then builds, other releases, other lines."""
+    releases = [
+        r for r in releases
+        if classify_release_tag(r['tag_name']) == 'release'
+    ]
+    prereleases = [
+        p for p in prereleases
+        if classify_release_tag(p['tag_name']) == 'prerelease'
+    ]
+    releases = sorted(releases, key=release_sort_key, reverse=True)
+    prereleases = filter_prereleases_superseded_by_release(releases, prereleases)
+
+    ordered = []
+    latest_release = releases[0] if releases else None
+    latest_prerelease = (
+        max(prereleases, key=prerelease_recency_key) if prereleases else None
+    )
+
+    if latest_release:
+        ordered.append(latest_release)
+    if latest_prerelease:
+        ordered.append(latest_prerelease)
+        latest_base = format_version_base(latest_prerelease['tag_name'])
+        same_line = [p for p in prereleases if format_version_base(p['tag_name']) == latest_base]
+        ordered.extend(order_same_line_prereleases(same_line, exclude=latest_prerelease))
+
+    ordered.extend(releases[1:])
+
+    other_groups = group_prereleases_by_base(
+        [p for p in prereleases if latest_prerelease is None
+         or format_version_base(p['tag_name']) != format_version_base(latest_prerelease['tag_name'])]
+    )
+    for base in sorted(other_groups, key=lambda b: tuple(map(int, b.split('.'))), reverse=True):
+        ordered.extend(order_same_line_prereleases(other_groups[base]))
+
+    return ordered, latest_release, latest_prerelease
+
+
+def format_release_display_name(release, latest_release, latest_prerelease):
+    label = f"{release['tag_name']} - {release['name']}"
+    if release is latest_release:
+        label += " (Latest release)"
+    elif release is latest_prerelease:
+        label += " (Latest prerelease)"
+    else:
+        kind, _ = parse_prerelease_suffix(release['tag_name']) or (None, None)
+        if kind == 'rc':
+            label += " (Release candidate)"
+        elif kind == 'build':
+            label += " (Pre-release)"
+    return label
+
+
 class FirmwareFlasher:
     def __init__(self, root):
         self.root = root
@@ -572,15 +712,14 @@ class FirmwareFlasher:
             
             all_releases = response.json()
             self.releases = []
-            # Updated regex to match vX.X.X and vX.X.X-XXX
-            semver_pattern = re.compile(r'^v?\d+\.\d+\.\d+(?:-\d+)?$')
             releases = []
             prereleases = []
             for release in all_releases:
                 tag = release.get('tag_name', '')
                 
-                if not semver_pattern.match(tag):
-                    self.log_status(f"Skipping {tag} (not semantic versioning)")
+                tag_kind = classify_release_tag(tag)
+                if tag_kind is None:
+                    self.log_status(f"Skipping {tag} (unrecognized tag format)")
                     continue
                 
                 bin_assets = [asset for asset in release.get('assets', []) 
@@ -591,30 +730,18 @@ class FirmwareFlasher:
                     continue
                 
                 release['bin_assets'] = bin_assets
-                if release.get('prerelease') or '-' in tag:
+                if tag_kind == 'prerelease':
                     prereleases.append(release)
                 else:
                     releases.append(release)
             
-            # Sort releases and prereleases by version (descending)
-            def version_key(r):
-                # Remove 'v' and split by '-' for prerelease
-                base = r['tag_name'].lstrip('v')
-                parts = base.split('-')
-                nums = tuple(map(int, parts[0].split('.')))
-                pre = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
-                return (*nums, -pre)  # prerelease comes after release
-            
-            releases.sort(key=version_key, reverse=True)
-            prereleases.sort(key=version_key, reverse=True)
-            
-            # Insert latest prerelease right after latest release
-            combined = releases[:1] + prereleases[:1] + releases[1:] + prereleases[1:]
-            self.releases = combined
-            
-            release_names = [f"{r['tag_name']} - {r['name']}" + 
-                           (" (Pre-release)" if r.get('prerelease') or '-' in r['tag_name'] else "") 
-                           for r in self.releases]
+            self.releases, latest_release, latest_prerelease = order_releases_for_display(
+                releases, prereleases
+            )
+            release_names = [
+                format_release_display_name(r, latest_release, latest_prerelease)
+                for r in self.releases
+            ]
             
             self.release_combo['values'] = release_names
             
